@@ -37,6 +37,7 @@
                                             </h1>
                                             <h1>可存储: {{ cpu.storage / 1024 }} KB</h1>
                                             <h1>并行: {{ cpu.coprocessors }}</h1>
+                                            <el-button v-if="cpu.busy" type="primary" size="small" @click="createAutoTask(cpu)">创建自动化物品监控</el-button>
                                         </div>
                                         <div class="cpu-output">
                                             <img v-if="cpu.output.image" :src="cpu.output.image" alt="output"
@@ -102,6 +103,7 @@ import { fetchStatus, addTask, createPollingController } from '@/utils/task'
 import itemUtil from "@/utils/items";
 import NumberFormat from '@/components/NumberFormat.vue';
 import CpuItem from '@/components/CpuItem.vue';
+import { trigger } from '@/utils/automate';
 
 export default {
     name: 'Cpus',
@@ -142,6 +144,115 @@ export default {
         bus.off('refreshCpuList', this.handleTaskResult);
     },
     methods: {
+        async createAutoTask(cpu) {
+            try {
+                // 获取CPU的最终成品（显示在CPU卡片上的物品）
+                let itemName = "未知物品";
+                if (cpu.output && cpu.output.label) {
+                    itemName = cpu.output.label;
+                } else if (cpu.output && cpu.output.title) {
+                    itemName = cpu.output.title;
+                }
+                
+                // 使用CPU空闲时触发器模板（必须与后端定义的模板名称完全匹配）
+                const triggerConfig = {
+                    name: "CPU空闲时",  // 必须与config.py中的触发器模板名称完全一致
+                    trigger_kwargs: {
+                        client_id: "client_01",  // 使用默认客户端
+                        cpu_name: cpu.name  // 使用当前CPU名称
+                    },
+                    action: "http_request",  // 使用HTTP请求操作
+                    action_kwargs: {
+                        method: "POST",
+                        url: "http://<ONEBOT_SERVER_ADDRESS>/send_group_msg",
+                        headers: {"Authorization": "<ONEBOT_SERVER_TOKEN>"},
+                        data: `{"group_id": "<TARGET_GROUP_ID>","message": "CPU '${cpu.name}' 所制作的物品 '${itemName}' 已完成"}`
+                    }
+                };
+                
+                console.log('创建自动化任务配置:', triggerConfig);
+                
+                // 调用自动化API添加触发器
+                const addResult = await trigger.addTrigger(triggerConfig);
+                
+                // addResult 直接包含 trigger_task_id（automate.js 已扁平化响应）
+                if (!addResult || !addResult.trigger_task_id) {
+                    this.$message.error('创建自动化任务失败: 响应数据无效');
+                    console.error('创建触发器失败: addResult 无效或缺少 trigger_task_id', addResult);
+                    return;
+                }
+                
+                const triggerTaskId = addResult.trigger_task_id;
+                console.log('触发器创建成功，触发器ID:', triggerTaskId);
+                
+                // 立即启动新创建的触发器
+                const startResult = await trigger.startTrigger({ trigger_task_id: triggerTaskId });
+                
+                // 防御性检查：处理启动成功但无响应数据的情况
+                if (startResult === null) {
+                    // 根据用户反馈，任务已启动成功，即使服务端未返回响应数据
+                    this.$message.success(`已创建并启动自动化任务: CPU空闲时 (CPU: ${cpu.name}, 物品: ${itemName})`);
+                    console.log('启动触发器成功: 服务端未返回响应数据，但任务已启动');
+                    return;
+                }
+                
+                // 完整的调试信息 - 一次性包含所有可能的失败场景
+                console.log('=== 启动自动化任务调试信息 ===');
+                console.log('触发器ID:', triggerTaskId);
+                console.log('startResult完整对象:', startResult);
+                console.log('startResult类型:', typeof startResult);
+                console.log('startResult是否为null:', startResult === null);
+                console.log('startResult是否为undefined:', startResult === undefined);
+                
+                // 检查整个响应对象
+                if (!startResult) {
+                    this.$message.error('启动自动化任务失败: 响应对象为undefined');
+                    console.error('启动触发器失败: startResult为undefined');
+                    console.log('=== 调试信息结束 ===');
+                    return;
+                }
+                
+                // 检查响应对象的属性
+                console.log('startResult是否有data属性:', 'data' in startResult);
+                console.log('startResult.data类型:', startResult.data ? typeof startResult.data : 'undefined');
+                
+                // 检查startResult.data是否存在
+                if (!startResult.data) {
+                    this.$message.error(`启动自动化任务失败: 响应数据不存在 (startResult: ${JSON.stringify(startResult)})`);
+                    console.error('启动触发器失败: startResult.data不存在');
+                    console.log('startResult所有属性:', Object.keys(startResult));
+                    console.log('=== 调试信息结束 ===');
+                    return;
+                }
+                
+                // 检查data属性的结构
+                console.log('startResult.data类型:', typeof startResult.data);
+                console.log('startResult.data是否有code属性:', 'code' in startResult.data);
+                console.log('startResult.data是否有message属性:', 'message' in startResult.data);
+                console.log('startResult.data.code:', startResult.data.code);
+                console.log('startResult.data.message:', startResult.data.message);
+                
+                // 检查启动结果
+                if (!startResult.data || startResult.data.code !== 200) {
+                    this.$message.error(`启动自动化任务失败: ${startResult?.data?.message || '未知错误'} (状态码: ${startResult?.data?.code || '未返回'})`);
+                    console.error('启动触发器失败:', startResult);
+                    return;
+                }
+                
+                this.$message.success(`已创建并启动自动化任务: CPU空闲时 (CPU: ${cpu.name}, 物品: ${itemName})`);
+                
+                // 最终的调试总结
+                console.log('=== 调试信息结束 ===');
+            } catch (error) {
+                this.$message.error(`创建自动化任务失败: ${error.message || '未知错误'}`);
+                console.error('创建自动化任务失败 (异常):', error);
+                if (error.response) {
+                    console.error('响应数据:', error.response.data);
+                    console.error('响应状态:', error.response.status);
+                }
+            }
+        },
+        
         handleCpuSelect(index) {
             console.log("CPU selected:", index, this.cpuList[index]);
             this.currentCpu = this.cpuList[index];

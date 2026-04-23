@@ -24,12 +24,15 @@ const trigger = {
             const data = response.data;
             if (data.code === 200) {
                 if (callback) callback(data.data);
+                return data.data; // 确保返回成功数据
             } else {
                 ElMessage.error(`添加触发器失败: ${data.code}, ${data.message ? data.message : data}`);
+                throw new Error(`API返回错误: ${data.message || '未知错误'}`); // 抛出错误以便上层捕获
             }
         } catch (error) {
-            ElMessage.error(`添加触发器失败: ${error}`);
+            ElMessage.error(`添加触发器失败: ${error.message || error}`);
             console.error('Error adding trigger:', error);
+            throw error; // 重新抛出错误，确保上层能捕获
         }
     },
     async removeTrigger(trigger_task_id, callback) {
@@ -63,16 +66,39 @@ const trigger = {
     },
     async startTrigger(trigger_task_id, callback) {
         try {
-            const response = await Requests.post('/api/automate/trigger/start', { trigger_task_id });
-            const data = response.data;
-            if (data.code === 200) {
-                if (callback) callback(data.data);
-            } else {
-                ElMessage.error(`启动触发器失败: ${data.code}, ${data.message ? data.message : data}`);
+            // 确保 trigger_task_id 是字符串，兼容传入对象的情况
+            const taskId = typeof trigger_task_id === 'string' ? trigger_task_id : trigger_task_id?.trigger_task_id;
+            if (!taskId) {
+                throw new Error('触发器ID无效');
             }
+            const response = await Requests.post('/api/automate/trigger/start', { trigger_task_id: taskId });
+            const data = response.data;
+            
+            // 兼容后端返回 data: null 但 code: 200 的情况
+            if (response.status === 200 && (data === null || data.code === 200)) {
+                // 后端成功但未返回 data，我们假设启动成功
+                if (callback) callback(null);
+                return null; // 返回 null 表示成功但无数据
+            }
+            
+            // 传统处理：有 data 且 code 不为 200
+            if (data && data.code !== 200) {
+                ElMessage.error(`启动触发器失败: ${data.code}, ${data.message ? data.message : data}`);
+                throw new Error(`API返回错误: ${data.message || '未知错误'}`);
+            }
+            
+            // 正常成功情况
+            if (data && data.code === 200) {
+                if (callback) callback(data.data);
+                return data.data;
+            }
+            
+            // 未知情况
+            throw new Error('未知的响应格式');
         } catch (error) {
-            ElMessage.error(`启动触发器失败: ${error}`);
+            ElMessage.error(`启动触发器失败: ${error.message || error}`);
             console.error('Error starting trigger:', error);
+            throw error; // 重新抛出错误，确保上层能捕获
         }
     },
     async stopTrigger(trigger_task_id, callback) {

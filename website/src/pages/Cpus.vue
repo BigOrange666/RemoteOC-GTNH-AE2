@@ -9,7 +9,7 @@
                     </div>
                     <div v-if="isMobile" class="cpu-select-container">
                         <el-select-v2 v-model="selectCpu" :options="cpuList" :props="selectProps"
-                            @change="handleCpuSelect" placeholder="请选择CPU" style="width: 100%">
+                            @change="handleCpuSelect" placeholder="请选择CPU" style="width: 100%;">
                             <template #default="{ item }">
                                 <CpuItem :item="item" />
                             </template>
@@ -17,6 +17,16 @@
                                 <CpuItem :item="currentCpu" />
                             </template>
                         </el-select-v2>
+
+                        <div style="text-align: center; padding: 8px 0 0 0;" v-if="currentCpu && currentCpu.busy">
+                            <el-button
+                                type="primary"
+                                size="small"
+                                @click="createAutoTask(currentCpu)"
+                            >
+                                创建自动化物品监控
+                            </el-button>
+                        </div>
                     </div>
                 </div>
             </el-card>
@@ -475,8 +485,11 @@ export default {
     .control-header-cpu {
         width: 100%;
         margin-top: 10px;
-        height: 120px !important;
+        height: auto !important;
     }
+    .el-main {
+    padding-top: 0 !important;
+  }
 }
 
 .control-header-cpu .el-card__body {
@@ -517,7 +530,7 @@ export default {
     .control-card {
         padding: 10px;
         margin-bottom: 10px;
-        height: 96px;
+        height: auto;
     }
 
     .control-bar {
@@ -538,6 +551,7 @@ export default {
 
 .cpu-select-container {
     width: 100%;
+    margin-top: 8px;
 }
 
 .cpu-detail {

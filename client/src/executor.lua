@@ -15,6 +15,7 @@ local executor = {}
 local serverUrl = env.baseUrl .. env.getPath
 local reportUrl = env.baseUrl .. env.reportPath
 local chunkedReportUrl = env.baseUrl .. env.chunkedReportPath
+local heartbeatUrl = env.baseUrl .. (env.heartbeatPath or "/api/task/heartbeat")
 
 
 local function collectGarbage()
@@ -88,6 +89,68 @@ local function close(req)
     -- 如果还不成功，记录错误日志
     if not success then
         logger.error("Failed to close the request.")
+    end
+end
+
+
+local function sendHeartbeat(taskId)
+    local req = internet.request(
+        heartbeatUrl,
+        dumpjson({ task_id = taskId }),
+        getHeaders()
+    )
+    if not req then
+        return
+    end
+
+    local startTime = computer.uptime()
+    local timeout = 3
+    while not req.finishConnect() do
+        if computer.uptime() - startTime > timeout then
+            close(req)
+            return
+        end
+        os.sleep(0)
+    end
+
+    repeat
+        local chunk = req.read()
+    until not chunk
+    close(req)
+end
+
+
+-- 在任务执行期间后台发送心跳；客户端断电后服务端可据此判断任务失联。
+function executor.startHeartbeat(taskId)
+    local ok, thread = pcall(require, "thread")
+    if not ok or not thread then
+        logger.warn("Thread library unavailable; task heartbeat disabled.")
+        return nil
+    end
+
+    local handle
+    local create_ok, err = pcall(function()
+        handle = thread.create(function()
+            while true do
+                pcall(sendHeartbeat, taskId)
+                os.sleep(env.heartbeatInterval or 10)
+            end
+        end)
+    end)
+
+    if not create_ok or not handle then
+        logger.warn("Unable to start task heartbeat: " .. tostring(err))
+        return nil
+    end
+    return handle
+end
+
+
+function executor.stopHeartbeat(handle)
+    if handle then
+        pcall(function()
+            handle:kill()
+        end)
     end
 end
 

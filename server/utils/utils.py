@@ -28,6 +28,7 @@ READY = "ready"
 PENDING = "pending"
 UPLOADING = "uploading"
 COMPLETED = "completed"
+FAILED = "failed"
 
 
 def decode_request_body(body: bytes) -> str:

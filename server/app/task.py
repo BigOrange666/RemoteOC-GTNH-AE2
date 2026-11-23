@@ -1,4 +1,5 @@
 from config import timer_task_config, task_config, SERVER_TOKEN
+from config import CLIENT_HEARTBEAT_TIMEOUT, TASK_TIMEOUT
 from utils.utils import *
 from utils.trigger import trigger_manager
 from utils.task import task_manager
@@ -20,6 +21,11 @@ async def token_required(x_server_token: str = Header(...)):
     """Token 验证依赖"""
     if x_server_token != SERVER_TOKEN:
         raise HTTPException(status_code=403, detail="Unauthorized, invalid token")
+
+
+def _fail_stale_task(task_id, task):
+    """客户端断电/崩溃后，把长期停留在 READY/PENDING/UPLOADING 的任务标记为失败。"""
+    return task_manager.fail_if_stale(task_id, CLIENT_HEARTBEAT_TIMEOUT, TASK_TIMEOUT) or task
 
 
 @router.get("/get", response_model=StandardResponseModel, dependencies=[Depends(token_required)])
@@ -47,6 +53,18 @@ async def get_commands(x_client_id: Optional[str] = Header(None, description="�
         return {"code": 200, "message": f"Commands for task fetched successfully", "data": {"taskId": task_id, "commands": commands, "is_chunked": is_chunked }}
     else:
         return {"code": 200, "message": "No ready commands available", "data": None}
+
+
+@router.post("/heartbeat", response_model=StandardResponseModel, dependencies=[Depends(token_required)])
+async def task_heartbeat(data: TaskHeartbeatModel, x_client_id: Optional[str] = Header(None, description="客户端id")):
+    """记录任务心跳，用于识别断电/崩溃的客户端。"""
+    if not task_manager.task_exists(data.task_id):
+        return {"code": 404, "message": "Task not found", "data": None}
+
+    device_manager.record_device(x_client_id, 'heartbeat')
+    if not task_manager.heartbeat_task(data.task_id):
+        return {"code": 404, "message": "Task not found", "data": None}
+    return {"code": 200, "message": "heartbeat received", "data": {"taskId": data.task_id}}
 
 
 @router.post("/chunked_report", response_model=StandardResponseModel, dependencies=[Depends(token_required)])
@@ -200,8 +218,9 @@ async def get_task_status(
     if not task:
         return {"code": 404, "message": "Task not found", "data": None}
 
+    task = _fail_stale_task(task_id, task)
     status = task.get("status")
-    if status == COMPLETED and remove:
+    if status in (COMPLETED, FAILED) and remove:
         if task_id not in timer_task_config and task_id not in task_config:
             task_manager.remove_task(task_id)
     if use_gzip and task.get("results"):
@@ -216,6 +235,7 @@ async def get_task_status(
             "gzip": use_gzip,
             "taskId": task_id,
             "status": status,
+            "message": task.get("message"),
             "result": result,
             "created_time": task.get("created_time"),
             "pending_time": task.get("pending_time"),

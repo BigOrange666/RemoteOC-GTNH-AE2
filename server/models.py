@@ -17,6 +17,10 @@ class CommandChunkedResultModel(BaseModel):
     task_id: str = Field(..., description="任务的唯一标识符")
     results: List = Field(..., description="任务执行的结果，通常是输出的文本或数据")
 
+# 任务心跳
+class TaskHeartbeatModel(BaseModel):
+    task_id: str = Field(..., description="任务的唯一标识符")
+
 # 定义添加命令的请求模型
 class AddCommandModel(BaseModel):
     task_id: Optional[str] = Field(None, description="任务的唯一标识符，如果未提供，则系统会生成新的 UUID")
@@ -26,7 +30,8 @@ class AddCommandModel(BaseModel):
 # 定义任务状态响应模型
 class TaskStatusResponseModel(BaseModel):
     task_id: str = Field(..., description="任务的唯一标识符")
-    status: str = Field(..., description="当前任务的状态（例如 READY、PENDING 或 COMPLETED）")
+    status: str = Field(..., description="当前任务的状态（例如 READY、PENDING、COMPLETED 或 FAILED）")
+    message: Optional[str] = Field(None, description="任务失败时的错误信息")
     results: List[str] = Field(None, description="如果任务已完成，此字段包含任务执行的结果")
 
 # 定义根据任务名添加任务的请求模型

@@ -10,6 +10,12 @@ if os.path.exists('.env.dev'):
     load_dotenv('.env.dev')
 load_dotenv()
 
+# 客户端心跳超时（秒）：超过该时间没有心跳，视为客户端已离线
+CLIENT_HEARTBEAT_TIMEOUT = int(os.getenv("CLIENT_HEARTBEAT_TIMEOUT", "45"))
+
+# 未上报心跳的旧客户端兜底超时（秒），需覆盖大型物品列表等长任务
+TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "900"))
+
 
 # 定时任务设置
 timer_task_config = {

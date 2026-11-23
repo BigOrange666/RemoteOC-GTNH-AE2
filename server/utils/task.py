@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from typing import Optional, List
-from .utils import logger, READY, PENDING, COMPLETED
+from .utils import logger, READY, PENDING, UPLOADING, COMPLETED, FAILED
 
 
 class TaskManager:
@@ -14,6 +14,77 @@ class TaskManager:
         self.file_dir = file_dir
         if not os.path.exists(self.file_dir):
             os.makedirs(self.file_dir)
+
+    def _heartbeat_path(self, task_id):
+        return os.path.join(self.file_dir, f"{task_id}.heartbeat")
+
+    def _clear_heartbeat(self, task_id):
+        path = self._heartbeat_path(task_id)
+        if os.path.exists(path):
+            os.remove(path)
+
+    def heartbeat_task(self, task_id) -> bool:
+        """记录任务心跳，不修改任务 JSON，避免与分块上报并发覆盖。"""
+        task = self.get_task(task_id)
+        if not task or task.get("status") not in (PENDING, UPLOADING):
+            return False
+        with open(self._heartbeat_path(task_id), "w") as file:
+            file.write(datetime.now().isoformat())
+        return True
+
+    def get_heartbeat_time(self, task_id):
+        """读取最后一次心跳时间；没有心跳文件时返回 None。"""
+        path = self._heartbeat_path(task_id)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r") as file:
+                return file.read().strip() or None
+        except OSError:
+            return None
+
+    @staticmethod
+    def _parse_time(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+
+    def fail_if_stale(self, task_id, heartbeat_timeout, fallback_timeout):
+        """检查 READY/PENDING/UPLOADING 任务是否失联，超时则标记为失败。"""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        status = task.get("status")
+
+        if status == READY:
+            created_time = self._parse_time(task.get("created_time"))
+            if created_time and (datetime.now() - created_time).total_seconds() > fallback_timeout:
+                self.fail_task(task_id, "任务等待客户端领取超时，客户端可能已离线；任务已终止，请重试。")
+                return self.get_task(task_id) or task
+            return task
+
+        if status not in (PENDING, UPLOADING):
+            return task
+
+        heartbeat_time = self._parse_time(self.get_heartbeat_time(task_id))
+        pending_time = self._parse_time(task.get("pending_time"))
+        reference_time = heartbeat_time or pending_time
+        if reference_time is None:
+            return task
+
+        timeout = heartbeat_timeout if heartbeat_time else fallback_timeout
+        if (datetime.now() - reference_time).total_seconds() <= timeout:
+            return task
+
+        if heartbeat_time:
+            message = "客户端心跳超时，可能已断电或退出；任务已终止，请重试。"
+        else:
+            message = "任务长时间未上报结果，客户端可能已离线；任务已终止，请重试。"
+        self.fail_task(task_id, message)
+        return self.get_task(task_id) or task
 
     def add_task(self, task_id: str, client_id: str, commands: list, status=READY, is_chunked=False) -> None:
         """
@@ -37,6 +108,7 @@ class TaskManager:
         file_path = os.path.join(self.file_dir, f"{task_id}.json")
         with open(file_path, "w") as file:
             json.dump(task_data, file)
+        self._clear_heartbeat(task_id)
         logger.debug('Add task: %s %s %s %s', task_id, client_id, commands, status)
 
     def update_task(self, task_id, status=None, results=None):
@@ -62,10 +134,31 @@ class TaskManager:
         if results:
             task['results'] = results
 
+        if status in (READY, PENDING, COMPLETED, FAILED):
+            self._clear_heartbeat(task_id)
+
         # 将更新后的任务重新保存到文件中
         file_path = os.path.join(self.file_dir, f"{task_id}.json")
         with open(file_path, "w") as file:
             json.dump(task, file)
+        return True
+
+    def fail_task(self, task_id, message) -> bool:
+        """把任务标记为失败，供前端停止轮询并展示原因。"""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+
+        task['status'] = FAILED
+        task['message'] = message
+        task['results'] = [json.dumps({"message": message}, ensure_ascii=False)]
+        task['completed_time'] = datetime.now().isoformat()
+
+        file_path = os.path.join(self.file_dir, f"{task_id}.json")
+        with open(file_path, "w") as file:
+            json.dump(task, file)
+        self._clear_heartbeat(task_id)
+        logger.warning("Task %s marked as failed: %s", task_id, message)
         return True
 
     def save_to_history(self, task_id: str, results, history_days: int = 7) -> bool:
@@ -192,6 +285,7 @@ class TaskManager:
         file_path = os.path.join(self.file_dir, f"{task_id}.json")
         if os.path.exists(file_path):
             os.remove(file_path)
+        self._clear_heartbeat(task_id)
 
     def task_exists(self, task_id) -> bool:
         """

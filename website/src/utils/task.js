@@ -14,6 +14,14 @@ const fetchStatus = async (task_id, handleResult, handleUploading, handleComplet
         const response = await Requests.get('/api/task/status', { task_id, remove: false, use_gzip: Setting.get('useTaskGzip') });
         const data = response.data;
         if (data.code === 200) {
+            if (data.data.status === 'failed') {
+                ElMessage.error(data.data.message || '任务失败，客户端可能已离线');
+                if (handleComplete) handleComplete(data.data);
+                if (pollingController) {
+                    pollingController.stop();
+                }
+                return;
+            }
             if (data.data.result && data.data.status !== 'uploading') {
                 if (data.data.gzip) {
                     // 解压缩
@@ -46,6 +54,7 @@ const fetchStatus = async (task_id, handleResult, handleUploading, handleComplet
             if (pollingController) {
                 pollingController.stop();
             }
+            if (handleComplete) handleComplete(data.data || {});
             ElMessage.error(`查询任务失败: ${data.code}, ${data.message ? data.message : data}`);
             console.error(data);
         }
@@ -53,6 +62,7 @@ const fetchStatus = async (task_id, handleResult, handleUploading, handleComplet
         if (pollingController) {
             pollingController.stop();
         }
+        if (handleComplete) handleComplete({});
         ElMessage.error(`查询任务失败: ${error}`);
         console.error(`Error fetching task status: ${error}`);
     }
@@ -68,6 +78,11 @@ const fetchStatusOnce = async (task_id, handleResult) => {
         const response = await Requests.get('/api/task/status', { task_id, remove: false, use_gzip: Setting.get('useTaskGzip') });
         const data = response.data;
         if (data.code === 200) {
+            if (data.data.status === 'failed') {
+                ElMessage.error(data.data.message || '任务失败，客户端可能已离线');
+                if (handleResult) handleResult(data.data);
+                return;
+            }
             if (data.data.result && data.data.gzip) {
                 // 解压缩
                 let binaryString = atob(data.data.result);

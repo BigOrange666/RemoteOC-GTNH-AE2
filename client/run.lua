@@ -35,11 +35,14 @@ local function pollServer()
         end
 
         if taskId and command_table then
+            -- 任务执行期间保持心跳；断电或崩溃后服务端能及时终止任务。
+            local heartbeat = executor.startHeartbeat(taskId)
             -- 处理命令并获取结果；内存不足等异常也要向上报，避免任务卡在 PENDING。
             local process_ok, command_result_table = xpcall(function()
                 return executor.processCommands(command_table, isChunked)
             end, debug.traceback)
             if not process_ok then
+                executor.stopHeartbeat(heartbeat)
                 executor.reportClientError(taskId, "客户端执行任务失败：" .. tostring(command_result_table))
                 return
             end
@@ -60,6 +63,7 @@ local function pollServer()
                 end, debug.traceback)
             end
 
+            executor.stopHeartbeat(heartbeat)
             if not report_ok then
                 command_result_table = nil
                 chunked_data = nil

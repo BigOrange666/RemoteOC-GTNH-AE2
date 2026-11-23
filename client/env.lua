@@ -20,6 +20,9 @@ local env = {
     -- 分块上报前保留的最小空闲内存（字节）；低于该值时停止上传并上报错误
     minFreeMemory = 2 * 1024 * 1024,
 
+    -- 任务执行期间发送心跳的间隔（秒）；客户端断电后服务端据此判定任务失联
+    heartbeatInterval = 10,
+
     -- 获取命令的接口
     getPath = "/api/task/get",
 
@@ -28,6 +31,9 @@ local env = {
 
     -- 分块上报接口
     chunkedReportPath = "/api/task/chunked_report",
+
+    -- 任务执行期间心跳接口
+    heartbeatPath = "/api/task/heartbeat",
 }
 
 return env

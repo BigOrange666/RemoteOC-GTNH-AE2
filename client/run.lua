@@ -35,16 +35,38 @@ local function pollServer()
         end
 
         if taskId and command_table then
-            -- 处理命令并获取结果
-            local command_result_table = executor.processCommands(command_table, isChunked)
+            -- 处理命令并获取结果；内存不足等异常也要向上报，避免任务卡在 PENDING。
+            local process_ok, command_result_table = xpcall(function()
+                return executor.processCommands(command_table, isChunked)
+            end, debug.traceback)
+            if not process_ok then
+                executor.reportClientError(taskId, "客户端执行任务失败：" .. tostring(command_result_table))
+                return
+            end
             os.sleep(0)
 
             logger.debug("Reporting results for Task ID: " .. tostring(taskId))
             -- 将执行结果和 taskId 一起报告回服务器
-            if isChunked then
-                executor.reportChunkedResults(taskId, command_result_table[1])
+            local chunked_data = command_result_table[1]
+            local report_ok, report_err
+            if isChunked and type(chunked_data) == "table" and #chunked_data > 0 then
+                report_ok, report_err = xpcall(function()
+                    executor.reportChunkedResults(taskId, chunked_data)
+                end, debug.traceback)
             else
-                executor.reportResults(taskId, command_result_table)
+                -- 结果不是可分块的数据（例如内存不足错误），使用普通上报。
+                report_ok, report_err = xpcall(function()
+                    executor.reportResults(taskId, command_result_table)
+                end, debug.traceback)
+            end
+
+            if not report_ok then
+                command_result_table = nil
+                chunked_data = nil
+                if collectgarbage then
+                    pcall(collectgarbage, "collect")
+                end
+                executor.reportClientError(taskId, "客户端上报失败（可能内存不足）：" .. tostring(report_err))
             end
         else
             logger.debug("No commands received or invalid response.")

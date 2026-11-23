@@ -14,8 +14,11 @@ local env = {
     -- ME控制器或ME接口地址
     aeAddress = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
 
-    -- 分块上报时每块的大小
-    chunkSize = 256,
+    -- 分块上报时每块的大小（内存较小的电脑建议 16 或 32）
+    chunkSize = 64,
+
+    -- 分块上报前保留的最小空闲内存（字节）；低于该值时停止上传并上报错误
+    minFreeMemory = 2 * 1024 * 1024,
 
     -- 获取命令的接口
     getPath = "/api/task/get",

@@ -116,6 +116,24 @@ export default {
             this.headerLoading = false;
             this.loading = false;
             if (data.result) {
+                // 客户端内存不足时会用字符串上报错误，避免继续遍历导致新的异常。
+                if (Array.isArray(data.result) && data.result.length && typeof data.result[0] === 'string') {
+                    let message = data.result[0];
+                    try {
+                        const parsed = JSON.parse(message);
+                        if (parsed && parsed.message) message = parsed.message;
+                    } catch (e) {
+                        // 保留原始错误文本
+                    }
+                    this.$message({
+                        type: 'error',
+                        message: message,
+                        duration: 10000,
+                        showClose: true,
+                    });
+                    return;
+                }
+
                 let itemList = data.result;
                 this.lastUpdate = data.completed_time.replace('T', ' ').replace('Z', ' ').split('.')[0];
 

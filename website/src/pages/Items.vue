@@ -248,6 +248,25 @@ export default {
 
             if (data.result) {
                 try {
+                    // 分块任务正常情况下返回物品对象数组；字符串表示客户端上报了错误。
+                    if (Array.isArray(data.result) && data.result.length && typeof data.result[0] === 'string') {
+                        let message = data.result[0];
+                        try {
+                            const parsed = JSON.parse(message);
+                            if (parsed && parsed.message) message = parsed.message;
+                        } catch (e) {
+                            // 保留原始错误文本
+                        }
+                        this.headerLoading = false;
+                        this.$message({
+                            type: 'error',
+                            message: message,
+                            duration: 10000,
+                            showClose: true,
+                        });
+                        return;
+                    }
+
                     let result = data.result;
                     this.lastUpdate = data.completed_time ? data.completed_time.split(".")[0].replace("T", " ") : '未知';
                     let isShowLiquidImage = Setting.get("showFluid");

@@ -17,6 +17,22 @@ local reportUrl = env.baseUrl .. env.reportPath
 local chunkedReportUrl = env.baseUrl .. env.chunkedReportPath
 
 
+local function collectGarbage()
+    if collectgarbage then
+        pcall(collectgarbage, "collect")
+    end
+end
+
+
+local function compactMessage(message)
+    local text = tostring(message or "未知错误")
+    if #text > 500 then
+        text = text:sub(1, 500) .. "..."
+    end
+    return text
+end
+
+
 
 -- 导入插件
 local function loadPlugins()
@@ -107,13 +123,31 @@ function executor.processCommands(command_table, isChunked)
 
         if success then
             if isChunked and command_result.message == "success" then
-                command_result_table[cid] = command_result.data
+                local freeMemory = computer.freeMemory()
+                local minFreeMemory = env.minFreeMemory or (2 * 1024 * 1024)
+                if freeMemory < minFreeMemory then
+                    -- 先释放大结果，避免在上报前再次触发内存不足。
+                    command_result.data = nil
+                    command_result = nil
+                    collectGarbage()
+
+                    local message = string.format(
+                        "客户端内存不足：剩余 %.1f MB，低于安全阈值 %.1f MB，已停止上传本次数据。请增加 OC 电脑内存，或改用简化物品列表。",
+                        freeMemory / 1024 / 1024,
+                        minFreeMemory / 1024 / 1024
+                    )
+                    logger.warn(message)
+                    command_result_table[cid] = json.encode({ message = message })
+                else
+                    command_result_table[cid] = command_result.data
+                end
             else
                 command_result_table[cid] = json.encode(command_result)
             end
         else
-            command_result_table[cid] = json.encode({ message = command_result })
+            command_result_table[cid] = json.encode({ message = compactMessage(command_result) })
         end
+        collectGarbage()
     end
     return command_result_table
 end
@@ -236,12 +270,32 @@ function executor.reportResults(taskId, command_result_table)
     close(req)
 end
 
+
+-- 上报客户端侧错误，避免任务一直停留在 PENDING。
+function executor.reportClientError(taskId, message)
+    local text = compactMessage(message)
+    logger.error(text)
+
+    local ok, err = pcall(function()
+        executor.reportResults(taskId, { dumpjson({ message = text }) })
+    end)
+    if not ok then
+        logger.error("Failed to report client error: " .. tostring(err))
+    end
+end
+
 -- 向服务器报告命令执行结果的函数（分块上传）
 function executor.reportChunkedResults(taskId, command_result_table)
     logger.debug("Reporting command results to server for Task ID: " .. tostring(taskId) .. " using chunked upload.")
 
-    -- 设置默认的分块大小，如果没有传入则默认分块大小为 128
-    local chunk_size = env.chunkSize or 128
+    local chunk_size = env.chunkSize or 64
+    local freeMemory = computer.freeMemory()
+    if freeMemory < (2 * 1024 * 1024) then
+        chunk_size = math.min(chunk_size, 16)
+    elseif freeMemory < (4 * 1024 * 1024) then
+        chunk_size = math.min(chunk_size, 32)
+    end
+
     local total_commands = #command_result_table
     local chunked = 1 -- 初始块编号为1，表示开始分块上传
 
@@ -267,16 +321,30 @@ function executor.reportChunkedResults(taskId, command_result_table)
 
         local headers = getHeaders()
 
+        -- 先单独编码，便于捕获内存不足并上报明确错误。
+        local payload
+        local encode_ok, encode_err = pcall(function()
+            payload = json.encode(report_data)
+        end)
+        if not encode_ok then
+            logger.error(string.format(
+                "客户端内存不足，无法编码第 %d 条开始的数据块（剩余 %.1f MB）：%s",
+                i,
+                computer.freeMemory() / 1024 / 1024,
+                tostring(encode_err)
+            ))
+            error(encode_err)
+        end
+
         -- 向服务器发送分块报告
         local req = internet.request(
             chunkedReportUrl .. "?chunked=" .. tostring(chunked),
-            json.encode(report_data),
+            payload,
             headers
         )
 
         if not req then
-            logger.error("Unable to connect to the server to report chunked results.")
-            return
+            error("Unable to connect to the server to report chunked results.")
         end
 
         local startTime = computer.uptime()
@@ -284,9 +352,8 @@ function executor.reportChunkedResults(taskId, command_result_table)
 
         while not req.finishConnect() do
             if computer.uptime() - startTime > timeout then
-                logger.error("Timeout while reporting chunked results to the server.")
                 close(req)
-                return
+                error("Timeout while reporting chunked results to the server.")
             end
             os.sleep(0)
         end
@@ -296,8 +363,21 @@ function executor.reportChunkedResults(taskId, command_result_table)
             local chunk = req.read()
         until not chunk
 
-        logger.debug("Chunked results for Task ID " .. tostring(taskId) .. " successfully reported: " .. tostring(chunked))
+        logger.debug(string.format(
+            "Chunked results for Task ID %s reported: chunk=%s items=%d free=%.1f MB",
+            tostring(taskId),
+            tostring(chunked),
+            #chunked_result,
+            computer.freeMemory() / 1024 / 1024
+        ))
         close(req)
+
+        -- 释放本块的临时数据，避免下一块编码时内存不足。
+        chunked_result = nil
+        report_data = nil
+        payload = nil
+        req = nil
+        collectGarbage()
 
         -- 如果最后一块已完成，结束循环
         if chunked == 0 then
@@ -306,6 +386,7 @@ function executor.reportChunkedResults(taskId, command_result_table)
         os.sleep(0.2)
     end
     logger.debug("Report done.")
+    return true
 end
 
 loadPlugins()
